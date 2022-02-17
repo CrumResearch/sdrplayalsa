@@ -89,7 +89,7 @@ void agc(short *buf, sdrplay_api_StreamCbParamsT *params, unsigned numSamples) {
 	    agc_increase_timer++;
 	    agc_decrease_timer++;
 	}
-	adc_result = buf[0];
+	adc_result = buf[i];
 	abs_adc = abs(adc_result);
 
 	if(abs_adc > max_adc) max_adc = abs_adc;	// get high water mark
