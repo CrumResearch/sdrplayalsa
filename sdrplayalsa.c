@@ -4,6 +4,8 @@
 // 20211029 - Added gain step size parameters -s and -S (decrease and increase attenuation, respectively)
 // 20211107 - Added -e <gainfile> argument to output gain reduction value to a file for use in WebSDR
 // 20211109 - Modified gain reduction value in file to be relative based on minimum gain (e.g. "gain_reduction-min_gain_reduction")
+// 20220222 - Added decimation, shift values and validation to properly configure for rates 96, 192, 384 and 768k.  A rate of 1536k is validated, but is not currently supported by ALSA, but included if someone wanted to take a crack at recompiling ALSA to allow it.  [Clint]
+// 20220223 - Modified so that when a gainfile is specified, a value of "0" (zero) is written to it at start-up.
 
 #define _GNU_SOURCE
 #include <alloca.h>
@@ -480,6 +482,11 @@ extern int main( int argc, char *argv[] ) {
 	    fprintf( stderr, "gainfile fopen: %s\n", snd_strerror( ret ) );
 	    return 1;
 	}
+        else {	// Init gain file with zero value
+	    fseek(gainfp, 0, SEEK_SET);
+	    fprintf(gainfp, "0\n");
+	    fflush(gainfp);
+        }
     }
 
     // Determine appropriate decimation rate
