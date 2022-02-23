@@ -222,7 +222,7 @@ static void usage( char *argv0 ) {
 	     "    -l val   set LNA state, default 3.  See SDRPlay API gain reduction tables for more info\n"
 	     "    -n       AGC enable, uses parameters a,b,c,g,s,S,x,y,z\n"
 	     "    -o dev   specify output device\n"
-	     "    -r rate  set sampling rate (in Hz) [48000, 96000, 192000, 384000, 768000 recommended]\n"
+	     "    -r rate  set sampling rate (in Hz) [Must be 96000, 192000, 384000 or 768000]\n"
 	     "    -S step_inc  set gain AGC attenuation increase (gain reduction) step size in dB, default = 1 (1-10)\n"
 	     "    -s step_dec  set gain AGC attenuation decrease (gain gain increase) step size in dB, default = 1 (1-10)\n"
 	     "    -t taps  set number of antialias FIR taps, default = 9\n"
@@ -259,6 +259,8 @@ extern int main( int argc, char *argv[] ) {
     static int taps = 9;
     int ret;
     int i;
+    static int decimation = 2;
+    static int rateshift = 2;
 
 
     while( ( opt = getopt( argc, argv, "a:b:c:de:f:g:hi:l:no:r:s:t:vw:x:y:z:B:W:G:S:" ) ) >= 0 )
@@ -422,6 +424,11 @@ extern int main( int argc, char *argv[] ) {
 	fprintf( stderr, "%s: No sample rate specified\n", argv[ 0 ] );
 	return 1;
     }
+
+    if((rate != 96000) && (rate != 192000) && (rate != 384000) && (rate != 768000))  {
+	fprintf( stderr, "%s: Invalid sample rate specified\n", argv[ 0 ] );
+	return 1;
+    }
     
     for( i = 0; i < numdevices; i++ )
 	if( in && strcasestr( devices[ i ].SerNo, in ) )
@@ -475,7 +482,30 @@ extern int main( int argc, char *argv[] ) {
 	}
     }
 
-    dp->devParams->fsFreq.fsHz = rate << 2;
+    // Determine appropriate decimation rate
+
+    if(rate == 96000)	{
+	decimation = 32;
+	rateshift = 5;
+    }
+    else if(rate == 192000)	{
+	decimation = 16;
+	rateshift = 4;
+    }
+    else if(rate == 384000)	{
+	decimation = 8;
+	rateshift = 3;
+    }
+    else if(rate == 768000)	{
+        decimation = 4;
+	rateshift = 2;
+    }
+    else if(rate == 1536000)	{
+	decimation = 2;
+	rateshift = 1;
+    }
+
+    dp->devParams->fsFreq.fsHz = rate << rateshift;
     dp->rxChannelA->tunerParams.rfFreq.rfHz = freq;
     dp->rxChannelA->tunerParams.bwType = bwtype;
     dp->rxChannelA->tunerParams.ifType = 0;
@@ -483,7 +513,7 @@ extern int main( int argc, char *argv[] ) {
     dp->rxChannelA->tunerParams.gain.LNAstate = lna;
 #if 1
     dp->rxChannelA->ctrlParams.decimation.enable = 1;
-    dp->rxChannelA->ctrlParams.decimation.decimationFactor = 4;
+    dp->rxChannelA->ctrlParams.decimation.decimationFactor = decimation;
     dp->rxChannelA->ctrlParams.decimation.wideBandSignal = wbs;
 #endif
     dp->rxChannelA->ctrlParams.agc.enable = 0;
@@ -495,6 +525,7 @@ extern int main( int argc, char *argv[] ) {
     fprintf( stderr, "   WBS value:  %u (0=off, 1=0n) \n", wbs );
     fprintf( stderr, "   AGC gain reduction step size:  %u dB (0=off, 1=0n) \n", gainstep_inc );
     fprintf( stderr, "   AGC gain increase step size:  %u dB (0=off, 1=0n) \n", gainstep_dec );
+    fprintf( stderr, "   Sample rate:  %u  (Decimation: %u  Shift: %u) \n", rate, decimation, rateshift );
     
     if( ( ret = sdrplay_api_Init( devices[ devind ].dev, &callbacks, NULL ) ) ) {
 	fprintf( stderr, "sdr_api_Init: %s\n", sdrplay_api_GetErrorString( ret ) );
