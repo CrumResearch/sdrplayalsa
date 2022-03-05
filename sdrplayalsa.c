@@ -5,7 +5,8 @@
 // 20211107 - Added -e <gainfile> argument to output gain reduction value to a file for use in WebSDR
 // 20211109 - Modified gain reduction value in file to be relative based on minimum gain (e.g. "gain_reduction-min_gain_reduction")
 // 20220222 - Added decimation, shift values and validation to properly configure for rates 96, 192, 384 and 768k.  A rate of 1536k is validated, but is not currently supported by ALSA, but included if someone wanted to take a crack at recompiling ALSA to allow it.  [Clint]
-// 20220223 - Modified so that when a gainfile is specified, a value of "0" (zero) is written to it at start-up.
+// 20220223 - Modified so that when a gainfile is specified, a value of "0" (zero) is written to it at start-up.  [Clint]
+// 20220304 - Commented out FIR taps option;  Added -R parameter to allow more explicit specification of the raw ADC sample rate and added to the STDOUT the calculated (raw) rate;  Added error trapping.  [Clint]
 
 #define _GNU_SOURCE
 #include <alloca.h>
@@ -211,9 +212,9 @@ static void usage( char *argv0 ) {
     fprintf( stderr, "usage: %s [options...]\n"
 	     "options:\n"
 	     "    -a inc   AGC \"increase\" threshold, default 16384\n"
-	     "    -B bwType baseband low-pass filter type (200, 300, 600, 1536, 5000)\n"
+	     "    -B bwType baseband low-pass filter bandwidth (200, 300, 600, 1536, 5000 kHz)\n"
 	     "    -b dec   AGC \"decrease\" threshold, default 8192\n"
-	     "    -c min   AGC sample period (ms), default 500\n"
+	     "    -c min   AGC sample period (ms), default 500, minimum 50\n"
 	     "    -d       list available input/output devices\n"
 	     "    -e gainfile  write gain_reduction value to file\n"
 	     "    -f freq  set tuner frequency (in Hz)\n"
@@ -224,16 +225,17 @@ static void usage( char *argv0 ) {
 	     "    -l val   set LNA state, default 3.  See SDRPlay API gain reduction tables for more info\n"
 	     "    -n       AGC enable, uses parameters a,b,c,g,s,S,x,y,z\n"
 	     "    -o dev   specify output device\n"
-	     "    -r rate  set sampling rate (in Hz) [Must be 96000, 192000, 384000 or 768000]\n"
+	     "    -r rate  set sampling rate (in Hz) [Must be 96000, 192000, 384000 or 768000 unless '-R' is specified]\n"
+             "    -R rexp  If specified, use with '-r' to set decimation and sample rate:  Choose 'rexp' so that 'rate * 2^rexp' is >=2.048 and <8.064 Msamples/sec:  Decimation is 2^rexp (Must be 0-5)\n"
 	     "    -S step_inc  set gain AGC attenuation increase (gain reduction) step size in dB, default = 1 (1-10)\n"
 	     "    -s step_dec  set gain AGC attenuation decrease (gain gain increase) step size in dB, default = 1 (1-10)\n"
-	     "    -t taps  set number of antialias FIR taps, default = 9\n"
+//	     "    -t taps  set number of antialias FIR taps, default = 9\n"
 	     "    -v       enable verbose output\n"
-	     "    -W       enable wideband signal mode (e.g. half-band filtering). Warning: High CPU useage!\n"
+	     "    -W       enable wideband signal mode (e.g. half-band filtering). Warning: High CPU useage! (May not work)\n"
 	     "    -w debugPeriodMs    warning/debug output period (ms)\n"
 	     "    -x A     num conversions for overload, default 4096\n"
-	     "    -y B     gain decrease event time (ms), default 1000\n"
-	     "    -z C     gain increase event time (ms), default 5000\n", argv0 );
+	     "    -y B     gain decrease event time (ms), default 1000, minimum 50\n"
+	     "    -z C     gain increase event time (ms), default 5000, minimum 50\n\n", argv0 );
 }
 
 static void setopt( int *p, char *optarg, char *argv0 ) {
@@ -261,11 +263,11 @@ extern int main( int argc, char *argv[] ) {
     static int taps = 9;
     int ret;
     int i;
-    static int decimation = 2;
+    static int decimation = 1;
     static int rateshift = 2;
+    static int rateval = -1;
 
-
-    while( ( opt = getopt( argc, argv, "a:b:c:de:f:g:hi:l:no:r:s:t:vw:x:y:z:B:W:G:S:" ) ) >= 0 )
+    while( ( opt = getopt( argc, argv, "a:b:c:de:f:g:hi:l:no:r:s:t:vw:x:y:z:B:W:G:S:R:" ) ) >= 0 )
 	switch( opt ) {
 	case 'a':
 	    setopt( &AGC1increaseThreshold, optarg, argv[ 0 ] );
@@ -299,7 +301,7 @@ extern int main( int argc, char *argv[] ) {
 	case 'g': // gain (reduction) - fixed gain, or minimum gain reduction level during AGC operation
 	    setopt( &min_gain_reduction, optarg, argv[ 0 ] );
 	    //
-	    if(min_gain_reduction < 19) min_gain_reduction = 19;
+	    if(min_gain_reduction < 20) min_gain_reduction = 20;  // trap invalid value
 	    else if(min_gain_reduction > max_gain_reduction) min_gain_reduction = max_gain_reduction;
 	    gain_reduction = min_gain_reduction;
 	    break;
@@ -307,7 +309,7 @@ extern int main( int argc, char *argv[] ) {
 	case 'G':  // maximum amount of gain reduction during AGC operation
 	    setopt( &max_gain_reduction, optarg, argv[ 0 ] );
 	    if(max_gain_reduction < gain_reduction) max_gain_reduction = gain_reduction;	// don't allow setting lower than minimum gain reduction
-	    else if(max_gain_reduction > 59) max_gain_reduction = 59;
+	    else if(max_gain_reduction > 59) max_gain_reduction = 59;  // trap invalid value
 	    break;
 	    
 	case 'h': // help
@@ -333,6 +335,10 @@ extern int main( int argc, char *argv[] ) {
 	case 'r': // sample rate
 	    setopt( &rate, optarg, argv[ 0 ] );
 	    break;
+
+        case 'R': // sample rate decimation exponent
+	    setopt( &rateval, optarg, argv [ 0 ] );
+            break;
 	
 	case 'S':  // AGC step size for INCREASE of attenuation
 	    setopt( &gainstep_inc, optarg, argv[ 0 ] );
@@ -413,7 +419,7 @@ extern int main( int argc, char *argv[] ) {
     }
 
     if( bwbad )	{
-	fprintf( stderr, "%s: Invalid bandwidth specified\n", argv[ 0 ] );
+	fprintf( stderr, "%s: Invalid bandwidth specified - must be 200, 300, 600 or 1536.\n", argv[ 0 ] );
 	return 1;
     }
 
@@ -427,7 +433,12 @@ extern int main( int argc, char *argv[] ) {
 	return 1;
     }
 
-    if((rate != 96000) && (rate != 192000) && (rate != 384000) && (rate != 768000))  {
+    if( ((AGC5B <50) || (AGC6C < 50) || (AGC3minTimeMs < 50)) && (AGCEnable == 1))   {
+        fprintf( stderr, "AGC Timing value setting <50 msec - recheck values! \n" );
+        return 1;
+    }
+
+    if((rateval == -1) && (rate != 96000) && (rate != 192000) && (rate != 384000) && (rate != 768000))  {
 	fprintf( stderr, "%s: Invalid sample rate specified\n", argv[ 0 ] );
 	return 1;
     }
@@ -477,39 +488,47 @@ extern int main( int argc, char *argv[] ) {
 	return 1;
     }
     
-    if( gainfile ) {
-	if( 0 == ( gainfp = fopen( gainfile, "w" ) )  ) {
+    if( gainfile ) {   // make sure that we can open gain file
+	if( 0 == ( gainfp = fopen( gainfile, "w" ) )  ) {   // Cannot open gainfile - error
 	    fprintf( stderr, "gainfile fopen: %s\n", snd_strerror( ret ) );
 	    return 1;
 	}
-        else {	// Init gain file with zero value
+        else {	// Init successful - load gain file with zero value to indicate active AGC
 	    fseek(gainfp, 0, SEEK_SET);
 	    fprintf(gainfp, "0\n");
 	    fflush(gainfp);
         }
     }
 
-    // Determine appropriate decimation rate
+    // Determine appropriate decimation rate if "-R" parameter not specified
 
-    if(rate == 96000)	{
-	decimation = 32;
-	rateshift = 5;
+    if(rateval == -1)	{	// If no "-R" parameter specified
+       if(rate == 96000)	{
+	   rateshift = 5;	// 96000 * (2^5) = 3072000 sps ADC rate
+       }
+       else if(rate == 192000)	{
+	   rateshift = 4;	// 192000 * (2^4) = 3072000 sps ADC rate
+       }
+       else if(rate == 384000)	{
+	   rateshift = 3;	// 384000 * (2^3) = 3072000 sps ADC rate
+       }
+       else if(rate == 768000)	{
+	   rateshift = 2;       // 768000 * (2^2) = 3072000 sps ADC rate
+       }
     }
-    else if(rate == 192000)	{
-	decimation = 16;
-	rateshift = 4;
+    else   {
+	rateshift = rateval;
     }
-    else if(rate == 384000)	{
-	decimation = 8;
-	rateshift = 3;
+
+    // Calculate "longhand" so we don't need math.h's "pow()" function just for this
+
+    for(i = 1; i <= rateshift; i++) {
+       decimation *= 2;
     }
-    else if(rate == 768000)	{
-        decimation = 4;
-	rateshift = 2;
-    }
-    else if(rate == 1536000)	{
-	decimation = 2;
-	rateshift = 1;
+
+    if(((rate << rateshift) < 2048000) || ((rate << rateshift) >= 8064000))   {
+	fprintf( stderr, "ADC sample rate of [%u*(2^%u)]=%lu out of range! \n", rate, rateshift, (long int)(rate << rateshift));
+	return 1;
     }
 
     dp->devParams->fsFreq.fsHz = rate << rateshift;
@@ -533,6 +552,7 @@ extern int main( int argc, char *argv[] ) {
     fprintf( stderr, "   AGC gain reduction step size:  %u dB (0=off, 1=0n) \n", gainstep_inc );
     fprintf( stderr, "   AGC gain increase step size:  %u dB (0=off, 1=0n) \n", gainstep_dec );
     fprintf( stderr, "   Sample rate:  %u  (Decimation: %u  Shift: %u) \n", rate, decimation, rateshift );
+    fprintf( stderr, "   ADC sample rate:  %lu sps \n",(long int)(rate << rateshift));
     
     if( ( ret = sdrplay_api_Init( devices[ devind ].dev, &callbacks, NULL ) ) ) {
 	fprintf( stderr, "sdr_api_Init: %s\n", sdrplay_api_GetErrorString( ret ) );
